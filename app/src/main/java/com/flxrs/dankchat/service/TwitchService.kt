@@ -7,70 +7,68 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
-import android.content.res.Configuration
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.media.app.NotificationCompat.MediaStyle
 import androidx.preference.PreferenceManager
 import com.flxrs.dankchat.MainActivity
 import com.flxrs.dankchat.R
 import com.flxrs.dankchat.service.irc.IrcMessage
 import com.flxrs.dankchat.service.twitch.connection.WebSocketConnection
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import org.koin.core.KoinComponent
 import org.koin.core.get
 import org.koin.core.parameter.parametersOf
+import java.util.concurrent.TimeUnit
 
 class TwitchService : Service(), KoinComponent {
 
+    private val client = OkHttpClient.Builder()
+        .retryOnConnectionFailure(true)
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(5, TimeUnit.SECONDS)
+        .writeTimeout(5, TimeUnit.SECONDS)
+        .build()
+
+    private val request = Request.Builder()
+        .url("wss://irc-ws.chat.twitch.tv")
+        .build()
+
     private val binder = LocalBinder()
     private val repository: TwitchRepository = get()
-    private val connection: WebSocketConnection = get { parametersOf(::onDisconnect, ::onMessage) }
+    private val readConnection: WebSocketConnection = get { parametersOf(client, request, ::onDisconnect, ::onReaderMessage) }
+    private val writeConnection: WebSocketConnection = get { parametersOf(client, request, null, ::onWriterMessage) }
     private lateinit var manager: NotificationManager
     private lateinit var sharedPreferences: SharedPreferences
-    private var changingConfiguration = false
-
     private var nick = ""
-    private var isBound = false
+
+    var shouldNotifyOnMention = false
     var startedConnection = false
         private set
 
-    override fun onBind(p0: Intent?): IBinder? {
-        stopForeground(true)
-        changingConfiguration = false
-        isBound = true
-
-        return binder
-    }
-
-    override fun onRebind(intent: Intent?) {
-        stopForeground(true)
-        changingConfiguration = false
-        isBound = true
-
-        super.onRebind(intent)
-    }
-
-    override fun onUnbind(intent: Intent?): Boolean {
-        if (!changingConfiguration) {
-            isBound = false
-            startForeground()
-        }
-
-        return true
-    }
-
     inner class LocalBinder(val service: TwitchService = this@TwitchService) : Binder()
 
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        changingConfiguration = true
+    override fun onBind(p0: Intent?): IBinder? = binder
+
+    override fun onDestroy() {
+        shouldNotifyOnMention = false
+        close()
+        if (::manager.isInitialized) {
+            manager.cancelAll()
+        }
+
+        stopForeground(true)
+        stopSelf()
     }
 
     override fun onCreate() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+
             val name = getString(R.string.app_name)
             val channel = NotificationChannel(
                 CHANNEL_ID_LOW,
@@ -87,9 +85,8 @@ class TwitchService : Service(), KoinComponent {
                 "Mentions",
                 NotificationManager.IMPORTANCE_DEFAULT
             )
-
-            manager.createNotificationChannel(channel)
             manager.createNotificationChannel(mentionChannel)
+            manager.createNotificationChannel(channel)
         }
 
         sharedPreferences = PreferenceManager.getDefaultSharedPreferences(this)
@@ -97,8 +94,10 @@ class TwitchService : Service(), KoinComponent {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == STOP_COMMAND) {
-            //manager.cancelAll()
+            LocalBroadcastManager.getInstance(this)
+                .sendBroadcast(Intent(MainActivity.SHUTDOWN_REQUEST_FILTER))
             stopForeground(true)
+            stopSelf()
         } else {
             startForeground()
         }
@@ -106,32 +105,38 @@ class TwitchService : Service(), KoinComponent {
         return START_NOT_STICKY
     }
 
-    @Synchronized
     fun connect(nick: String, oauth: String) {
         if (!startedConnection) {
-            connection.connect(nick, oauth)
+            readConnection.connect(nick, oauth)
+            writeConnection.connect(nick, oauth)
             startedConnection = true
             this.nick = nick
         }
     }
 
-    fun joinChannel(channel: String) = connection.joinChannel(channel)
-
-    fun partChannel(channel: String) = connection.partChannel(channel)
-
-    fun sendMessage(channel: String, input: String) = repository.sendMessage(channel, input) {
-        connection.sendMessage(it)
+    fun joinChannel(channel: String) {
+        readConnection.joinChannel(channel)
+        writeConnection.joinChannel(channel)
     }
 
-    @Synchronized
+    fun partChannel(channel: String) {
+        readConnection.partChannel(channel)
+        writeConnection.partChannel(channel)
+    }
+
+    fun sendMessage(channel: String, input: String) = repository.prepareMessage(channel, input) {
+        writeConnection.sendMessage(it)
+    }
+
     fun reconnect(onlyIfNecessary: Boolean) {
-        connection.reconnect(onlyIfNecessary)
+        readConnection.reconnect(onlyIfNecessary)
+        writeConnection.reconnect(onlyIfNecessary)
     }
 
-    @Synchronized
-    fun close(onClosed: () -> Unit) {
+    fun close(onClosed: () -> Unit = { }) {
         startedConnection = false
-        connection.close(onClosed)
+        writeConnection.close(onClosed)
+        readConnection.close(onClosed)
     }
 
     private fun startForeground() {
@@ -156,25 +161,41 @@ class TwitchService : Service(), KoinComponent {
                 R.drawable.ic_clear_24dp,
                 getString(R.string.notification_stop),
                 pendingStopIntent
-            )
-            .setStyle(MediaStyle().setShowActionsInCompactView(0))
+            ).apply {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    setStyle(MediaStyle().setShowActionsInCompactView(0))
+                }
+            }
             .setContentIntent(pendingStartActivityIntent)
-            .setSmallIcon(R.mipmap.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification_icon)
             .build()
 
         startForeground(NOTIFICATION_ID, notification)
     }
 
     private fun onMessage(message: IrcMessage) {
-        val messages = repository.onMessage(message, connection.isJustinFan)
-        if (!isBound) messages?.filter { it.message.isMention(nick) }?.map {
-            if (sharedPreferences.getBoolean(
-                    getString(R.string.preference_notification_key),
-                    true
-                )
-            ) {
-                createMentionNotification(it.message.channel, it.message.name, it.message.message)
-            }
+        val messages = repository.onMessage(message)
+        if (shouldNotifyOnMention) {
+            messages?.filter { it.message.isMention }
+                ?.takeIf {
+                    sharedPreferences.getBoolean(getString(R.string.preference_notification_key), true)
+                }?.map {
+                    createMentionNotification(it.message.channel, it.message.name, it.message.message)
+                }
+        }
+    }
+
+    private fun onWriterMessage(message: IrcMessage) {
+        when (message.command) {
+            "PRIVMSG" -> Unit
+            "366"     -> onConnect(message.params[1].substring(1), writeConnection.isAnonymous)
+            else      -> onMessage(message)
+        }
+    }
+
+    private fun onReaderMessage(message: IrcMessage) {
+        if (message.command == "PRIVMSG") {
+            onMessage(message)
         }
     }
 
@@ -184,19 +205,19 @@ class TwitchService : Service(), KoinComponent {
         }
 
         val summary = NotificationCompat.Builder(this, CHANNEL_ID_DEFAULT)
-            .setContentTitle("You have new Mentions")
+            .setContentTitle(getString(R.string.notification_new_mentions))
             .setContentText("")
-            .setSmallIcon(R.mipmap.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification_icon)
             .setGroup(MENTION_GROUP)
             .setGroupSummary(true)
             .setAutoCancel(true)
             .build()
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID_DEFAULT)
-            .setContentTitle("$user just mentioned you in #$channel")
+            .setContentTitle(getString(R.string.notification_mention, user, channel))
             .setContentText(message)
             .setContentIntent(pendingStartActivityIntent)
-            .setSmallIcon(R.mipmap.ic_launcher_foreground)
+            .setSmallIcon(R.drawable.ic_notification_icon)
             .setAutoCancel(true)
             .setGroup(MENTION_GROUP)
             .build()
@@ -205,14 +226,16 @@ class TwitchService : Service(), KoinComponent {
         manager.notify(SUMMARY_NOTIFICATION_ID, summary)
     }
 
-    private fun onDisconnect() = repository.handleDisconnect()
+    private fun onDisconnect() = repository.handleDisconnect(getString(R.string.system_message_disconnected))
+
+    private fun onConnect(channel: String, isAnonymous: Boolean) = repository.handleConnected(channel, isAnonymous, getString(R.string.system_message_connected))
 
     companion object {
         private const val CHANNEL_ID_LOW = "com.flxrs.dankchat.dank_id"
         private const val CHANNEL_ID_DEFAULT = "com.flxrs.dankchat.very_dank_id"
-        private const val MENTION_GROUP = "dank_group"
         private const val NOTIFICATION_ID = 77777
         private const val SUMMARY_NOTIFICATION_ID = 12345
+        private const val MENTION_GROUP = "dank_group"
         private const val STOP_COMMAND = "STOP_DANKING"
 
         private var notificationId = 42

@@ -1,7 +1,6 @@
 package com.flxrs.dankchat.chat
 
 import android.content.SharedPreferences
-import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -70,7 +69,8 @@ class ChatFragment : Fragment() {
 
         preferenceListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             when (key) {
-                getString(R.string.preference_timestamp_key) -> {
+                getString(R.string.preference_timestamp_key),
+                getString(R.string.preference_show_timed_out_messages_key) -> {
                     binding.chat.swapAdapter(adapter, false)
                 }
             }
@@ -94,10 +94,7 @@ class ChatFragment : Fragment() {
         ) as android.content.ClipboardManager).apply {
             setPrimaryClip(android.content.ClipData.newPlainText("twitch message", message))
         }
-        Snackbar.make(binding.root, R.string.snackbar_message_copied, Snackbar.LENGTH_SHORT).apply {
-            view.setBackgroundResource(R.color.colorPrimary)
-            setTextColor(Color.WHITE)
-        }.show()
+        Snackbar.make(binding.root, R.string.snackbar_message_copied, Snackbar.LENGTH_SHORT).show()
     }
 
     private fun scrollToPosition(position: Int) {

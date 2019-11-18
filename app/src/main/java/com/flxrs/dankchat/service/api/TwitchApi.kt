@@ -34,9 +34,12 @@ object TwitchApi {
 
     private const val NUULS_UPLOAD_URL = "https://i.nuuls.com/upload"
 
+    private const val TWITCHEMOTES_SETS_URL = "https://api.twitchemotes.com/api/v4/sets?id="
+
     private const val BASE_LOGIN_URL = "https://id.twitch.tv/oauth2/authorize?response_type=token"
     private const val REDIRECT_URL = "https://flxrs.com/dankchat"
-    private const val SCOPES = "chat:edit+chat:read+user_read+user_subscriptions+channel:moderate"
+    private const val SCOPES = "chat:edit+chat:read+user_read+user_subscriptions" +
+            "+channel:moderate+user_blocks_read+user_blocks_edit+whispers:read+whispers:edit"
     const val CLIENT_ID = "xu7vd1i6tlr0ak45q1li2wdc0lrma8"
     const val LOGIN_URL =
         "$BASE_LOGIN_URL&client_id=$CLIENT_ID&redirect_uri=$REDIRECT_URL&scope=$SCOPES"
@@ -48,6 +51,8 @@ object TwitchApi {
         .create(TwitchApiService::class.java)
 
     private val nuulsUploadClient = OkHttpClient()
+
+    private val loadedRecentsInChannels = mutableListOf<String>()
 
     suspend fun getUser(oAuth: String): UserEntities.KrakenUser? = withContext(Dispatchers.IO) {
         try {
@@ -63,6 +68,18 @@ object TwitchApi {
         withContext(Dispatchers.IO) {
             try {
                 val response = service.getUserEmotes("OAuth $oAuth", id)
+                if (response.isSuccessful) return@withContext response.body()
+            } catch (t: Throwable) {
+                Log.e(TAG, Log.getStackTraceString(t))
+            }
+            return@withContext null
+        }
+
+    suspend fun getUserSets(sets: List<String>): List<EmoteEntities.Twitch.EmoteSet>? =
+        withContext(Dispatchers.IO) {
+            try {
+                val ids = sets.joinToString(",")
+                val response = service.getSets("${TWITCHEMOTES_SETS_URL}$ids")
                 if (response.isSuccessful) return@withContext response.body()
             } catch (t: Throwable) {
                 Log.e(TAG, Log.getStackTraceString(t))
@@ -130,7 +147,7 @@ object TwitchApi {
         withContext(Dispatchers.IO) {
             try {
                 val response = service.getBTTVChannelEmotes("$BTTV_CHANNEL_BASE_URL$id")
-                if (response.isSuccessful) return@withContext response.body() else null
+                if (response.isSuccessful) return@withContext response.body()
             } catch (t: Throwable) {
                 Log.e(TAG, Log.getStackTraceString(t))
             }
@@ -149,10 +166,16 @@ object TwitchApi {
         }
 
     suspend fun getRecentMessages(channel: String): RecentMessages? = withContext(Dispatchers.IO) {
+        if (loadedRecentsInChannels.contains(channel)) {
+            return@withContext null
+        }
         try {
             val response =
                 service.getRecentMessages("$RECENT_MSG_URL$channel")
-            if (response.isSuccessful) return@withContext response.body()
+            if (response.isSuccessful) {
+                loadedRecentsInChannels.add(channel)
+                return@withContext response.body()
+            }
         } catch (t: Throwable) {
             Log.e(TAG, Log.getStackTraceString(t))
         }
@@ -187,4 +210,25 @@ object TwitchApi {
         }
         return@withContext null
     }
+
+    suspend fun getNameFromUserId(id: Int): String? = withContext(Dispatchers.IO) {
+        try {
+            val response = service.getUserHelix("${HELIX_BASE_URL}users?id=$id")
+            if (response.isSuccessful) return@withContext response.body()?.data?.get(0)?.name
+        } catch (t: Throwable) {
+            Log.e(TAG, Log.getStackTraceString(t))
+        }
+        return@withContext null
+    }
+
+    suspend fun getIgnores(oAuth: String, id: Int): UserEntities.KrakenUsersBlocks? =
+        withContext(Dispatchers.IO) {
+            try {
+                val response = service.getIgnores("OAuth $oAuth", id)
+                if (response.isSuccessful) return@withContext response.body()
+            } catch (t: Throwable) {
+                Log.e(TAG, Log.getStackTraceString(t))
+            }
+            return@withContext null
+        }
 }

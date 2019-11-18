@@ -11,15 +11,16 @@ android {
         applicationId "com.flxrs.dankchat"
         minSdkVersion 21
         targetSdkVersion 29
-        versionCode 79
-        versionName "1.2.0"
+        versionCode 95
+        versionName "1.6.3"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
         release {
-            minifyEnabled false
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
 
             applicationVariants.all { variant ->
@@ -65,6 +66,7 @@ dependencies {
 
     implementation "androidx.appcompat:appcompat:$appcompat_version"
     implementation "androidx.constraintlayout:constraintlayout:$constraint_version"
+    implementation "androidx.recyclerview:recyclerview:$recyclerview_version"
     implementation "androidx.viewpager2:viewpager2:$viewpager2_version"
     implementation "androidx.core:core-ktx:$core_version"
     implementation "androidx.media:media:$media_version"

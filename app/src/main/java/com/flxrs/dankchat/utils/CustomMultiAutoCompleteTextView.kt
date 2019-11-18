@@ -16,7 +16,8 @@ class CustomMultiAutoCompleteTextView : AppCompatMultiAutoCompleteTextView {
     )
 
     override fun onKeyPreIme(keyCode: Int, event: KeyEvent?): Boolean {
-        //if (event?.keyCode == KeyEvent.KEYCODE_BACK) clearFocus()
+        if (event?.keyCode == KeyEvent.KEYCODE_BACK) clearFocus()
+
         return super.onKeyPreIme(keyCode, event)
     }
 }

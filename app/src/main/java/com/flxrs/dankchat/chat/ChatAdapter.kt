@@ -2,10 +2,7 @@ package com.flxrs.dankchat.chat
 
 import android.annotation.SuppressLint
 import android.content.ActivityNotFoundException
-import android.graphics.Color
-import android.graphics.drawable.ColorDrawable
 import android.net.Uri
-import android.os.Build
 import android.text.Spannable
 import android.text.SpannableStringBuilder
 import android.text.TextPaint
@@ -17,7 +14,6 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
-import androidx.core.content.ContextCompat
 import androidx.core.text.bold
 import androidx.core.text.color
 import androidx.preference.PreferenceManager
@@ -27,7 +23,6 @@ import androidx.recyclerview.widget.RecyclerView
 import com.bumptech.glide.Glide
 import com.flxrs.dankchat.R
 import com.flxrs.dankchat.databinding.ChatItemBinding
-import com.flxrs.dankchat.preferences.DankChatPreferenceStore
 import com.flxrs.dankchat.service.twitch.emote.EmoteManager
 import com.flxrs.dankchat.utils.DrawableTarget
 import com.flxrs.dankchat.utils.EmoteDrawableTarget
@@ -79,10 +74,28 @@ class ChatAdapter(
         with(holder.binding.itemText) {
             isClickable = false
             text = ""
+            alpha = 1.0f
             movementMethod = LinkMovementMethod.getInstance()
-            EmoteManager.gifCallback.addView(this)
+            val darkModePreferenceKey = context.getString(R.string.preference_dark_theme_key)
+            val timedOutPreferenceKey = context.getString(R.string.preference_show_timed_out_messages_key)
+            val timestampPreferenceKey = context.getString(R.string.preference_timestamp_key)
+            val preferences = PreferenceManager.getDefaultSharedPreferences(context)
+            val isDarkMode = preferences.getBoolean(darkModePreferenceKey, true)
+            val showTimedOutMessages = preferences.getBoolean(timedOutPreferenceKey, true)
+            val showTimeStamp = preferences.getBoolean(timestampPreferenceKey, true)
 
             getItem(position).message.apply {
+                if (timedOut) {
+                    alpha = 0.5f
+
+                    if (!showTimedOutMessages) {
+                        text = if (showTimeStamp) {
+                            "$time ${context.getString(R.string.timed_out_message)}"
+                        } else context.getString(R.string.timed_out_message)
+                        return@with
+                    }
+                }
+
                 var ignoreClicks = false
                 if (!this.isSystem) this@with.setOnLongClickListener {
                     ignoreClicks = true
@@ -102,34 +115,18 @@ class ChatAdapter(
 
                 val lineHeight = this@with.lineHeight
                 val scaleFactor = lineHeight * 1.5 / 112
-                val currentUserName = DankChatPreferenceStore(this@with.context).getUserName() ?: ""
-
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                    val foregroundColor = if (timedOut) ContextCompat.getColor(
-                        this@with.context,
-                        R.color.colorTimeOut
-                    ) else Color.TRANSPARENT
-                    foreground = ColorDrawable(foregroundColor)
-                }
 
                 val background = when {
-                    isNotify -> R.color.sub_background
-                    isMention(currentUserName) -> R.color.highlight_background
-                    else -> android.R.color.transparent
+                    isNotify  -> if (isDarkMode) R.color.color_highlight_dark else R.color.color_highlight_light
+                    isMention -> if (isDarkMode) R.color.color_mention_dark else R.color.color_mention_light
+                    else      -> android.R.color.transparent
                 }
                 this@with.setBackgroundResource(background)
 
-
+                val name = if (displayName.equals(name, true)) displayName else "$name($displayName)"
                 val displayName = if (isAction) "$name " else if (name.isBlank()) "" else "$name: "
                 var badgesLength = 0
-                val timestampPreferenceKey =
-                    this@with.context.getString(R.string.preference_timestamp_key)
-                val preferences = PreferenceManager.getDefaultSharedPreferences(this@with.context)
-                val (prefixLength, spannable) = if (preferences.getBoolean(
-                        timestampPreferenceKey,
-                        true
-                    )
-                ) {
+                val (prefixLength, spannable) = if (showTimeStamp) {
                     time.length + 1 + displayName.length to SpannableStringBuilder().bold { append("$time ") }
                 } else {
                     displayName.length to SpannableStringBuilder()
@@ -161,7 +158,7 @@ class ChatAdapter(
                         })
                 }
 
-                val normalizedColor = color.normalizeColor()
+                val normalizedColor = color.normalizeColor(isDarkMode)
                 spannable.bold { color(normalizedColor) { append(displayName) } }
 
                 if (isAction) {
@@ -198,12 +195,6 @@ class ChatAdapter(
                                 if (!ignoreClicks)
                                     androidx.browser.customtabs.CustomTabsIntent.Builder()
                                         .addDefaultShareMenuItem()
-                                        .setToolbarColor(
-                                            ContextCompat.getColor(
-                                                v.context,
-                                                R.color.colorPrimary
-                                            )
-                                        )
                                         .setShowTitle(true)
                                         .build().launchUrl(v.context, Uri.parse(url.fullUrl))
                             } catch (e: ActivityNotFoundException) {
@@ -216,6 +207,10 @@ class ChatAdapter(
                     val end = start + url.originalUrl.length
                     spannable.setSpan(clickableSpan, start, end, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
                     text = spannable
+                }
+
+                if (emotes.filter { it.isGif }.count() > 0) {
+                    EmoteManager.gifCallback.addView(this@with)
                 }
 
                 emotes.forEach { e ->
@@ -266,9 +261,9 @@ class ChatAdapter(
                             .into(EmoteDrawableTarget(e, context) {
                                 val ratio = it.intrinsicWidth / it.intrinsicHeight.toFloat()
                                 val height = when {
-                                    it.intrinsicHeight < 55 && e.code.isBlank() -> (70 * scaleFactor).roundToInt()
+                                    it.intrinsicHeight < 55 && e.code.isBlank()       -> (70 * scaleFactor).roundToInt()
                                     it.intrinsicHeight in 55..111 && e.code.isBlank() -> (112 * scaleFactor).roundToInt()
-                                    else -> (it.intrinsicHeight * scaleFactor).roundToInt()
+                                    else                                              -> (it.intrinsicHeight * scaleFactor).roundToInt()
                                 }
                                 val width = (height * ratio).roundToInt()
                                 it.setBounds(0, 0, width, height)
@@ -290,7 +285,7 @@ class ChatAdapter(
 
     private class DetectDiff : DiffUtil.ItemCallback<ChatItem>() {
         override fun areItemsTheSame(oldItem: ChatItem, newItem: ChatItem): Boolean {
-            return oldItem == newItem
+            return (!newItem.message.timedOut || !newItem.message.isMention) && oldItem == newItem
         }
 
         override fun areContentsTheSame(oldItem: ChatItem, newItem: ChatItem): Boolean {
